@@ -1,17 +1,21 @@
 package com.code_execution_platform.kafka;
 
-;
 import com.code_execution_platform.event.SubmissionEvent;
 import com.code_execution_platform.model.ExecutionResult;
 import com.code_execution_platform.model.Submission;
 import com.code_execution_platform.model.SubmissionStatus;
+import com.code_execution_platform.model.enums.ExecutionVerdict;
 import com.code_execution_platform.repository.ExecutionResultRepository;
 import com.code_execution_platform.repository.SubmissionRepository;
 import com.code_execution_platform.service.DockerExecutionService;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.header.Header;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.ByteBuffer;
 import java.util.UUID;
 
 @Service
@@ -21,60 +25,82 @@ public class SubmissionEventConsumer {
     private final SubmissionRepository submissionRepository;
     private final ExecutionResultRepository executionResultRepository;
     private final DockerExecutionService dockerExecutionService;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
     public SubmissionEventConsumer(
             ObjectMapper objectMapper,
             SubmissionRepository submissionRepository,
             ExecutionResultRepository executionResultRepository,
-            DockerExecutionService dockerExecutionService
+            DockerExecutionService dockerExecutionService,
+            KafkaTemplate<String, String> kafkaTemplate
     ) {
         this.objectMapper = objectMapper;
         this.submissionRepository = submissionRepository;
         this.executionResultRepository = executionResultRepository;
         this.dockerExecutionService = dockerExecutionService;
+        this.kafkaTemplate = kafkaTemplate;
     }
 
     @KafkaListener(
-            topics = "submission-events",
+            topics = KafkaConstants.SUBMISSION_TOPIC,
             groupId = "code-execution-workers"
     )
-    public void consume(String message) {
+    public void consume(ConsumerRecord<String, String> record) {
+
+        int retryCount = getRetryCount(record);
 
         try {
-            // 1. Deserialize event
             SubmissionEvent event =
-                    objectMapper.readValue(message, SubmissionEvent.class);
+                    objectMapper.readValue(record.value(), SubmissionEvent.class);
 
             UUID submissionId = event.getSubmissionId();
 
-            // 2. Load submission
             Submission submission =
                     submissionRepository.findById(submissionId)
                             .orElseThrow(() ->
-                                    new RuntimeException("Submission not found: " + submissionId)
+                                    new RuntimeException("Submission not found")
                             );
 
             submission.setStatus(SubmissionStatus.RUNNING);
             submissionRepository.save(submission);
 
-            // 3. Execute code in Docker
             ExecutionResult result =
                     dockerExecutionService.executePythonInDocker(
                             submission.getSourceCode(),
                             submissionId
                     );
 
-            // 4. Save result
             executionResultRepository.save(result);
 
-            // 5. Mark completed
-            submission.setStatus(SubmissionStatus.COMPLETED);
+            if (result.getVerdict() == ExecutionVerdict.SYSTEM_ERROR) {
+                submission.setStatus(SubmissionStatus.FAILED);
+            } else {
+                submission.setStatus(SubmissionStatus.COMPLETED);
+            }
+
             submissionRepository.save(submission);
 
         } catch (Exception e) {
-            // IMPORTANT: In real systems we would retry / send to DLQ
-            e.printStackTrace();
+
+            if (retryCount >= KafkaConstants.MAX_RETRIES) {
+                // Next step: DLQ
+                kafkaTemplate.send(
+                        KafkaConstants.DLQ_TOPIC,
+                        record.key(),
+                        record.value()
+                );
+                return;
+            }
+
+            throw e; // retry
         }
     }
-}
 
+    private int getRetryCount(ConsumerRecord<String, String> record) {
+        Header header = record.headers().lastHeader(KafkaConstants.RETRY_HEADER);
+        if (header == null) {
+            return 0;
+        }
+        return ByteBuffer.wrap(header.value()).getInt();
+    }
+}

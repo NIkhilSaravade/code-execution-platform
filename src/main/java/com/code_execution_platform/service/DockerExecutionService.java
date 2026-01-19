@@ -1,8 +1,8 @@
 package com.code_execution_platform.service;
 
-
 import com.code_execution_platform.exceptions.ExecutionException;
 import com.code_execution_platform.model.ExecutionResult;
+import com.code_execution_platform.model.enums.ExecutionVerdict;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
@@ -20,20 +20,16 @@ public class DockerExecutionService {
     public ExecutionResult executePythonInDocker(String sourceCode, UUID submissionId) {
 
         Path tempDir = null;
-        Path codeFile = null;
-
         ExecutionResult result = new ExecutionResult();
         result.setSubmissionId(submissionId);
 
-        long start = System.currentTimeMillis();
+        long startTime = System.currentTimeMillis();
 
         try {
-            // 1. Create isolated temp directory
-            tempDir = Files.createTempDirectory("docker-run-");
-            codeFile = tempDir.resolve("code.py");
+            tempDir = Files.createTempDirectory("docker-exec-");
+            Path codeFile = tempDir.resolve("code.py");
             Files.writeString(codeFile, sourceCode);
 
-            // 2. Build docker command
             List<String> command = List.of(
                     "docker", "run", "--rm",
                     "--cpus=0.5",
@@ -46,29 +42,37 @@ public class DockerExecutionService {
                     "/app/code.py"
             );
 
-            ProcessBuilder pb = new ProcessBuilder(command);
-            Process process = pb.start();
+            Process process = new ProcessBuilder(command).start();
 
-            boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            boolean finished =
+                    process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
             if (!finished) {
                 process.destroyForcibly();
-                throw new ExecutionException("Time Limit Exceeded");
+                result.setVerdict(ExecutionVerdict.TIME_LIMIT_EXCEEDED);
+                result.setExitCode(-1);
+                return result;
             }
 
-            result.setExitCode(process.exitValue());
+            int exitCode = process.exitValue();
+            result.setExitCode(exitCode);
             result.setStdout(read(process.getInputStream()));
             result.setStderr(read(process.getErrorStream()));
 
-        } catch (ExecutionException e) {
-            throw e;
+            if (exitCode == 0) {
+                result.setVerdict(ExecutionVerdict.SUCCESS);
+            } else {
+                result.setVerdict(ExecutionVerdict.RUNTIME_ERROR);
+            }
+
         } catch (Exception e) {
-            throw new ExecutionException("Docker execution failed: " + e.getMessage());
+            result.setVerdict(ExecutionVerdict.SYSTEM_ERROR);
+            throw new ExecutionException("Docker execution failed", e);
         } finally {
             cleanup(tempDir);
         }
 
-        result.setExecutionTimeMs(System.currentTimeMillis() - start);
+        result.setExecutionTimeMs(System.currentTimeMillis() - startTime);
         return result;
     }
 
@@ -78,13 +82,13 @@ public class DockerExecutionService {
 
     private void cleanup(Path dir) {
         try {
-            if (dir != null)
+            if (dir != null) {
                 Files.walk(dir)
                         .sorted((a, b) -> b.compareTo(a))
                         .forEach(p -> {
                             try { Files.deleteIfExists(p); } catch (Exception ignored) {}
                         });
+            }
         } catch (Exception ignored) {}
     }
 }
-
