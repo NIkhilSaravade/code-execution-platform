@@ -13,6 +13,10 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 @Service
 public class ExecutionService {
+    /**
+     * Phase 1 legacy local execution service.
+     * Replaced by DockerExecutionService in Phase 2.
+     */
 
     private static final long TIMEOUT_SECONDS = 5;
     private static final int MAX_SOURCE_SIZE = 10_000;

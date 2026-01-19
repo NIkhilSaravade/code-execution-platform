@@ -16,16 +16,16 @@ public class SubmissionService {
 
     private final SubmissionRepository submissionRepository;
     private final ExecutionResultRepository executionResultRepository;
-    private final ExecutionService executionService;
+    private final DockerExecutionService dockerExecutionService;
 
     public SubmissionService(
             SubmissionRepository submissionRepository,
             ExecutionResultRepository executionResultRepository,
-            ExecutionService executionService
+            ExecutionService executionService, DockerExecutionService dockerExecutionService
     ) {
         this.submissionRepository = submissionRepository;
         this.executionResultRepository = executionResultRepository;
-        this.executionService = executionService;
+        this.dockerExecutionService = dockerExecutionService;
     }
 
     public UUID submit(String language, String sourceCode) {
@@ -39,7 +39,10 @@ public class SubmissionService {
 
         try {
             ExecutionResult result =
-                    executionService.executePython(sourceCode, submission.getId());
+                    dockerExecutionService.executePythonInDocker(
+                            sourceCode,
+                            submission.getId()
+                    );
 
             executionResultRepository.save(result);
             submission.setStatus(SubmissionStatus.COMPLETED);

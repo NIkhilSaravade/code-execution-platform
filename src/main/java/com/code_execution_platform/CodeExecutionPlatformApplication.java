@@ -8,6 +8,7 @@ public class CodeExecutionPlatformApplication {
 
 	public static void main(String[] args) {
 		SpringApplication.run(CodeExecutionPlatformApplication.class, args);
+
 	}
 
 
